@@ -1,26 +1,42 @@
 const sharp = require('sharp');
+const { PassThrough } = require('stream');
+const fetch = require('node-fetch');
 const redirect = require('./redirect');
 
-function compress(req, res, input) {
+async function compress(req, res, inputStream) {
   const format = req.params.webp ? 'webp' : 'jpeg';
 
-  sharp(input)
+  const transform = sharp()
     .grayscale(req.params.grayscale)
     .toFormat(format, {
       quality: req.params.quality,
       progressive: true,
       optimizeScans: true
-    })
-    .toBuffer((err, output, info) => {
-      if (err || !info || res.headersSent) {
-        return redirect(req, res);
-      }
+    });
 
-      res.setHeader('content-type', `image/${format}`);
-      res.setHeader('content-length', info.size);
-      res.setHeader('x-original-size', req.params.originSize);
-      res.setHeader('x-bytes-saved', req.params.originSize - info.size);
-      res.status(200).send(output);
+  const passThrough = new PassThrough();
+  let originalSize = 0;
+
+  inputStream.on('data', chunk => {
+    originalSize += chunk.length;
+  });
+
+  inputStream
+    .pipe(transform)
+    .pipe(passThrough)
+    .on('finish', () => {
+      const contentType = `image/${format}`;
+      const outputSize = passThrough.bytesWritten;
+
+      res.setHeader('content-type', contentType);
+      res.setHeader('content-length', outputSize);
+      res.setHeader('x-original-size', originalSize);
+      res.setHeader('x-bytes-saved', originalSize - outputSize);
+
+      res.status(200).send(passThrough);
+    })
+    .on('error', () => {
+      redirect(req, res);
     });
 }
 
